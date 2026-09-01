@@ -1,0 +1,3 @@
+# Ignore Git metadata
+.git
+.git/
