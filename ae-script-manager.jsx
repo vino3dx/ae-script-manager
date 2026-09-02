@@ -1,47 +1,10 @@
-﻿/**
- * AE Script Manager — 阶段 2
+/**
+ * AE Script Manager — 阶段 3 (已修复中文编码、Hover 与自适应布局)
  * Adobe After Effects 可停靠脚本管理器面板
  * 兼容 AE 2020 ~ 2025，基于 ExtendScript (ES3)
- *
- * 阶段 2 已实现功能（在阶段 1 基础上递增）：
- *   阶段 1：
- *     1. 可停靠 ScriptUI 面板（自动识别 Panel / palette 模式）
- *     2. 自动扫描 ScriptFile 目录下的 .jsx / .jsxbin 脚本
- *     3. 同名 .png 图标自动配对；图标缺失时使用占位按钮
- *     4. 网格视图（列数随面板宽度自适应）
- *     5. 单击图标运行对应脚本（$.evalFile）
- *     6. 搜索框实时过滤
- *     7. 分页加载（默认每页 30 个）
- *     8. 设置持久化到本地 JSON
- *     9. 全程 try/catch 兜底，避免 AE 崩溃
- *   阶段 2 新增：
- *     10. 脚本元数据持久化（scripts-meta.json：收藏 / 使用次数 / 最近使用时间）
- *     11. 收藏切换（单元格内 ★/☆ 按钮，点击即时保存）
- *     12. 运行脚本时自动累计使用次数、刷新最近使用时间
- *     13. 列表视图（网格/列表可切换）
- *     14. 排序：名称 / 最近使用 / 使用次数 / 收藏优先
- *
- * 安装与运行：
- *   - 作为可停靠面板：将本文件复制到
- *       AE 安装目录\Support Files\Scripts\ScriptUI Panels\
- *     重启 AE，菜单「窗口」中即可看到「ae-script-manager.jsx」
- *   - 作为临时脚本：菜单「文件 → 脚本 → 运行脚本文件...」选择本文件
- *
- * 目录约定：
- *   [根]/
- *   ├── ae-script-manager.jsx        ← 本文件
- *   ├── ScriptFile/                  ← 脚本与图标存放处
- *   │   ├── 脚本A.jsx
- *   │   ├── 脚本A.png
- *   │   └── ...
- *   └── ScriptManagerConfig/        ← 首次运行自动创建
- *       ├── settings.json            ← 通用设置
- *       └── scripts-meta.json        ← 脚本元数据
  */
 
-// ==================== 全局命名空间 ====================
 var SM = SM || {};
-
 
 // =========================================================================
 // 模块：SM.Util —— 通用工具
@@ -49,7 +12,6 @@ var SM = SM || {};
 SM.Util = (function () {
     var util = {};
 
-    // 安全执行：捕获异常并返回回退值，避免任何运行时错误中断主流程
     util.safe = function (fn, fallback) {
         try {
             return fn();
@@ -58,7 +20,6 @@ SM.Util = (function () {
         }
     };
 
-    // 路径拼接（统一使用 / 分隔，ExtendScript 在 Win/Mac 均可识别）
     util.joinPath = function (base, sub) {
         if (!base) { return sub; }
         var last = base.charAt(base.length - 1);
@@ -68,7 +29,6 @@ SM.Util = (function () {
         return base + "/" + sub;
     };
 
-    // 获取本脚本（ae-script-manager.jsx）所在目录
     util.getScriptDir = function () {
         var dir = util.safe(function () {
             var f = new File($.fileName);
@@ -89,13 +49,11 @@ SM.Util = (function () {
         return (idx >= 0) ? fileName.substring(idx + 1).toLowerCase() : "";
     };
 
-    // 字符串包含（忽略大小写）；needle 为空时返回 true
     util.containsCI = function (haystack, needle) {
         if (!needle) { return true; }
         return (haystack.toLowerCase().indexOf(needle.toLowerCase()) >= 0);
     };
 
-    // 时间戳格式化为 YYYY-MM-DD；0 或无效返回 "未使用"
     util.formatDate = function (ts) {
         if (!ts) { return "未使用"; }
         var d = util.safe(function () { return new Date(ts); }, null);
@@ -107,7 +65,6 @@ SM.Util = (function () {
     return util;
 })();
 
-
 // =========================================================================
 // 模块：SM.Storage —— 数据持久化（JSON 读写）
 // =========================================================================
@@ -118,16 +75,14 @@ SM.Storage = (function () {
     var SETTINGS_FILE = "settings.json";
     var META_FILE = "scripts-meta.json";
 
-    // 默认设置；与已保存设置合并，保证字段完整
     var DEFAULT_SETTINGS = {
         version: "1.0",
-        viewMode: "grid",        // grid | list
-        sortBy: "name",          // name | lastUsed | usageCount | favorite
+        viewMode: "grid",
+        sortBy: "name",
         iconSize: 64,
         pageSize: 30
     };
 
-    // 获取/创建配置目录（与主脚本同级）
     storage.getConfigDir = function () {
         var root = SM.Util.getScriptDir();
         var dir = new Folder(SM.Util.joinPath(root.fsName, CONFIG_DIR_NAME));
@@ -161,7 +116,6 @@ SM.Storage = (function () {
         }, false);
     };
 
-    // ---- 设置 ----
     storage.loadSettings = function () {
         var path = SM.Util.joinPath(storage.getConfigDir().fsName, SETTINGS_FILE);
         var saved = storage.readJSON(path, {}) || {};
@@ -177,7 +131,6 @@ SM.Storage = (function () {
         return storage.writeJSON(path, settings);
     };
 
-    // ---- 元数据 ----
     storage.loadMeta = function () {
         var path = SM.Util.joinPath(storage.getConfigDir().fsName, META_FILE);
         var saved = storage.readJSON(path, null);
@@ -197,13 +150,11 @@ SM.Storage = (function () {
     return storage;
 })();
 
-
 // =========================================================================
 // 模块：SM.Scanner —— 脚本目录扫描
 // =========================================================================
 SM.Scanner = (function () {
     var scanner = {};
-
     var SCRIPT_DIR_NAME = "ScriptFile";
     var VALID_EXTS = { jsx: true, jsxbin: true };
 
@@ -212,43 +163,54 @@ SM.Scanner = (function () {
         return new Folder(SM.Util.joinPath(root.fsName, SCRIPT_DIR_NAME));
     };
 
-    // 扫描脚本：返回 [{ name, baseName, path, iconPath, iconExists }]
-    // 仅扫描顶层文件，不递归子目录（避免把资源子目录里的 .js 误识别为脚本）
+    // 安全获取解码后的文件名，修复中文乱码
+    function getDecodedName(f) {
+        return SM.Util.safe(function () { return decodeURI(f.name); }, f.name);
+    }
+
     scanner.scan = function () {
         var result = [];
         var dir = scanner.getScriptDir();
         if (!dir.exists) { return result; }
 
         var entries = SM.Util.safe(function () { return dir.getFiles(); }, []) || [];
-        var i, len, f, baseName;
-
-        // 第一遍：建立图标映射表 baseName -> 图标绝对路径
+        var i, len, f, baseName, fName;
         var iconMap = {};
+        var iconURIMap = {};
+
+        // 第一遍：扫描 PNG，建立映射
         for (i = 0, len = entries.length; i < len; i++) {
             f = entries[i];
-            if (f instanceof File && SM.Util.getExtension(f.name) === "png") {
-                baseName = SM.Util.getBaseName(f.name);
-                iconMap[baseName] = f.fsName;
+            if (f instanceof File) {
+                fName = getDecodedName(f);
+                if (SM.Util.getExtension(fName) === "png") {
+                    baseName = SM.Util.getBaseName(fName);
+                    iconMap[baseName] = f.fsName;
+                    iconURIMap[baseName] = f.absoluteURI;
+                }
             }
         }
 
-        // 第二遍：收集脚本并配对图标
+        // 第二遍：收集脚本，配对图标
         for (i = 0, len = entries.length; i < len; i++) {
             f = entries[i];
-            if (f instanceof File && VALID_EXTS[SM.Util.getExtension(f.name)] === true) {
-                baseName = SM.Util.getBaseName(f.name);
-                var iconPath = iconMap[baseName] || null;
-                result.push({
-                    name: f.name,
-                    baseName: baseName,
-                    path: f.fsName,
-                    iconPath: iconPath,
-                    iconExists: (iconPath !== null)
-                });
+            if (f instanceof File) {
+                fName = getDecodedName(f);
+                if (VALID_EXTS[SM.Util.getExtension(fName)] === true) {
+                    baseName = SM.Util.getBaseName(fName);
+                    var iconPath = iconMap[baseName] || null;
+                    result.push({
+                        name: fName,  // 使用解码后的名称作为唯一标识
+                        baseName: baseName,
+                        path: f.fsName,
+                        iconPath: iconPath,
+                        iconURI: iconURIMap[baseName] || null,
+                        iconExists: (iconPath !== null)
+                    });
+                }
             }
         }
 
-        // 按名称升序排序（作为默认顺序）
         result.sort(function (a, b) {
             var x = a.baseName, y = b.baseName;
             if (x < y) { return -1; }
@@ -262,63 +224,67 @@ SM.Scanner = (function () {
     return scanner;
 })();
 
-
 // =========================================================================
 // 模块：SM.Icon —— 图标加载与占位处理
 // =========================================================================
 SM.Icon = (function () {
     var icon = {};
 
-    // 占位文本：取脚本名前 N 个字符；为空时返回 "?"
     icon.placeholderText = function (baseName, maxLen) {
         if (!baseName || baseName.length === 0) { return "?"; }
         var n = maxLen || 2;
         return baseName.length >= n ? baseName.substring(0, n) : baseName;
     };
 
-    // 尝试加载图标，返回 ScriptUI Image 对象；失败返回 null
-    icon.load = function (iconPath) {
-        if (!iconPath) { return null; }
+    icon.load = function (iconPath, iconURI) {
+        if (!iconPath && !iconURI) { return null; }
         return SM.Util.safe(function () {
-            var f = new File(iconPath);
-            if (!f.exists) { return null; }
-            return ScriptUI.newImage(f);
+            var img = null;
+            if (!img && iconURI) {
+                try { img = ScriptUI.newImage(new File(iconURI)); } catch (e1) { img = null; }
+            }
+            if (!img && iconPath) {
+                try { img = ScriptUI.newImage(iconPath); } catch (e2) { img = null; }
+            }
+            if (!img && iconPath) {
+                var f = new File(iconPath);
+                if (f.exists) {
+                    try { img = ScriptUI.newImage(f); } catch (e3) { img = null; }
+                }
+            }
+            return img;
         }, null);
     };
 
     return icon;
 })();
 
-
 // =========================================================================
-// 模块：SM.Meta —— 脚本元数据管理（收藏 / 使用次数 / 最近使用）
+// 模块：SM.Meta —— 脚本元数据管理
 // =========================================================================
 SM.Meta = (function () {
     var meta = {};
-    var M = null;  // 元数据对象 { version, scripts:{}, recent:[] }
+    var M = null;
+    meta.CATEGORIES = ["动画", "工具", "渲染"];
 
-    // 初始化：从磁盘加载，缺失字段补默认值
     meta.init = function () {
         M = SM.Storage.loadMeta();
     };
 
-    // 内部：确保某脚本的元数据条目存在（写入前调用）
     function ensureEntry(name) {
         if (!M.scripts[name]) {
-            M.scripts[name] = {
-                favorite: false,
-                usageCount: 0,
-                lastUsed: 0,
-                firstAdded: (new Date()).getTime()
-            };
+            M.scripts[name] = { favorite: false, usageCount: 0, lastUsed: 0, firstAdded: (new Date()).getTime(), category: "" };
         }
+        if (typeof M.scripts[name].category !== "string") { M.scripts[name].category = ""; }
         return M.scripts[name];
     }
 
-    // 读取单脚本元数据（不存在则返回临时默认对象，不写入）
     meta.get = function (name) {
-        if (M.scripts[name]) { return M.scripts[name]; }
-        return { favorite: false, usageCount: 0, lastUsed: 0, firstAdded: 0 };
+        if (M.scripts[name]) {
+            if (typeof M.scripts[name].category !== "string") { M.scripts[name].category = ""; }
+            return M.scripts[name];
+        }
+        return { favorite: false, usageCount: 0, lastUsed: 0, firstAdded: 0, category: "" };
     };
 
     meta.isFavorite = function (name) {
@@ -326,7 +292,19 @@ SM.Meta = (function () {
         return m && m.favorite === true;
     };
 
-    // 切换收藏状态；返回新状态（true=已收藏）
+    meta.getCategory = function (name) {
+        var m = M.scripts[name];
+        if (!m || typeof m.category !== "string") { return ""; }
+        return m.category;
+    };
+
+    meta.setCategory = function (name, cat) {
+        var m = ensureEntry(name);
+        m.category = (cat === undefined) ? "" : cat;
+        meta.save();
+        return m.category;
+    };
+
     meta.toggleFavorite = function (name) {
         var m = ensureEntry(name);
         m.favorite = !m.favorite;
@@ -334,21 +312,17 @@ SM.Meta = (function () {
         return m.favorite;
     };
 
-    // 记录一次使用：累计次数 + 刷新 lastUsed + 更新 recent 列表（最多 10 条）
     meta.recordUsage = function (name) {
         var m = ensureEntry(name);
         var now = (new Date()).getTime();
         m.usageCount = (m.usageCount || 0) + 1;
         m.lastUsed = now;
-
-        // 维护最近使用列表（去重后置顶，最多保留 10 条）
         var i;
         for (i = M.recent.length - 1; i >= 0; i--) {
             if (M.recent[i].file === name) { M.recent.splice(i, 1); }
         }
         M.recent.unshift({ file: name, ts: now });
         if (M.recent.length > 10) { M.recent.length = 10; }
-
         meta.save();
     };
 
@@ -359,20 +333,15 @@ SM.Meta = (function () {
     return meta;
 })();
 
-
 // =========================================================================
 // 模块：SM.UI —— 界面构建与渲染
 // =========================================================================
 SM.UI = (function () {
     var ui = {};
-    var S = null;  // 运行期状态
+    var S = null;
 
-    // 跨平台中文字体名（解决 ScriptUI 默认主题字体不渲染中文导致的乱码）
     var UI_FONT_NAME = ($.os === "Macintosh") ? "PingFang SC" : "Microsoft YaHei";
-    // hover 高亮背景色（淡蓝）
-    var HOVER_BG = [0.92, 0.95, 1.0];
 
-    // 为元素设置中文字体；size 默认 12
     ui.applyFont = function (el, size) {
         if (!el) { return el; }
         SM.Util.safe(function () {
@@ -382,29 +351,44 @@ SM.UI = (function () {
         return el;
     };
 
-    // 为容器元素添加 hover 高亮（鼠标悬停时改变背景色）
+    // [重写] 兼容底层的 Hover 逻辑
     ui.addHover = function (el) {
-        if (!el) { return el; }
-        var origBg = null;
-        SM.Util.safe(function () { origBg = el.graphics.backgroundColor; }, null);
-        el.addEventListener("mouseover", function () {
-            SM.Util.safe(function () { el.graphics.backgroundColor = HOVER_BG; }, null);
-        });
-        el.addEventListener("mouseout", function () {
-            SM.Util.safe(function () { el.graphics.backgroundColor = origBg; }, null);
-        });
+        if (!el) return el;
+        SM.Util.safe(function () {
+            // ScriptUI 中 BrushType.SOLID_COLOR = 0
+            // 建立带有 30% 透明度的蓝色高亮（兼容深色/浅色模式）
+            var hoverBrush = el.graphics.newBrush(0, [0.4, 0.6, 0.8, 0.3]);
+            var origBrush = el.graphics.backgroundColor; 
+            
+            el.addEventListener("mouseover", function () {
+                SM.Util.safe(function () { el.graphics.backgroundColor = hoverBrush; }, null);
+            });
+            
+            el.addEventListener("mouseout", function () {
+                SM.Util.safe(function () {
+                    if (origBrush) {
+                        el.graphics.backgroundColor = origBrush;
+                    } else if (el.parent && el.parent.graphics && el.parent.graphics.backgroundColor) {
+                        // 借用父容器颜色还原，防止变成黑色方块
+                        el.graphics.backgroundColor = el.parent.graphics.backgroundColor;
+                    } else {
+                        // 最差的兜底：画一个全透明的 brush
+                        el.graphics.backgroundColor = el.graphics.newBrush(0, [1, 1, 1, 0]);
+                    }
+                }, null);
+            });
+        }, null);
         return el;
     };
 
-    // 初始化：合并元数据到脚本项，设置运行期状态
     ui.init = function (settings, scripts) {
-        // 把元数据字段合并到每个脚本项，便于直接读取/渲染
         var i, len, m;
         for (i = 0, len = scripts.length; i < len; i++) {
             m = SM.Meta.get(scripts[i].name);
             scripts[i].favorite = m.favorite || false;
             scripts[i].usageCount = m.usageCount || 0;
             scripts[i].lastUsed = m.lastUsed || 0;
+            scripts[i].category = m.category || "";
         }
 
         S = {
@@ -413,15 +397,16 @@ SM.UI = (function () {
             allScripts: scripts,
             filtered: scripts.slice(),
             keyword: "",
-            page: 0,
+            scrollPos: 0,
+            visibleCount: 30,
             cols: 3,
             viewMode: settings.viewMode || "grid",
             sortBy: settings.sortBy || "name",
+            activeCategory: "all",
             controls: {}
         };
     };
 
-    // 计算当前列数（基于面板宽度与图标尺寸，仅网格视图使用）
     ui.computeColumns = function () {
         var w = 380;
         if (S.panel && S.panel.size && S.panel.size[0] > 0) {
@@ -432,16 +417,11 @@ SM.UI = (function () {
         return (cols < 1) ? 1 : cols;
     };
 
-    // 对 filtered 数组按当前排序模式排序
     ui.sortFiltered = function () {
         var mode = S.sortBy;
         if (mode === "lastUsed") {
-            // 最近使用优先（时间戳大的在前；从未使用的排最后）
-            S.filtered.sort(function (a, b) {
-                return (b.lastUsed || 0) - (a.lastUsed || 0);
-            });
+            S.filtered.sort(function (a, b) { return (b.lastUsed || 0) - (a.lastUsed || 0); });
         } else if (mode === "usageCount") {
-            // 使用次数多者优先；并列时按名称
             S.filtered.sort(function (a, b) {
                 var d = (b.usageCount || 0) - (a.usageCount || 0);
                 if (d !== 0) { return d; }
@@ -450,7 +430,6 @@ SM.UI = (function () {
                 return 0;
             });
         } else if (mode === "favorite") {
-            // 收藏优先，其次按名称
             S.filtered.sort(function (a, b) {
                 var af = a.favorite ? 1 : 0;
                 var bf = b.favorite ? 1 : 0;
@@ -460,7 +439,6 @@ SM.UI = (function () {
                 return 0;
             });
         } else {
-            // 默认按名称升序
             S.filtered.sort(function (a, b) {
                 if (a.baseName < b.baseName) { return -1; }
                 if (a.baseName > b.baseName) { return 1; }
@@ -469,23 +447,24 @@ SM.UI = (function () {
         }
     };
 
-    // 应用搜索过滤 + 排序 + 重置到第 1 页 + 渲染
     ui.applySearch = function () {
         var kw = S.keyword;
-        if (!kw) {
-            S.filtered = S.allScripts.slice();
-        } else {
-            S.filtered = [];
-            var i, len, item;
-            for (i = 0, len = S.allScripts.length; i < len; i++) {
-                item = S.allScripts[i];
-                if (SM.Util.containsCI(item.baseName, kw)) {
-                    S.filtered.push(item);
-                }
+        var cat = S.activeCategory;
+        S.filtered = [];
+        var i, len, item;
+        for (i = 0, len = S.allScripts.length; i < len; i++) {
+            item = S.allScripts[i];
+            if (cat === "favorites") {
+                if (!item.favorite) { continue; }
+            } else if (cat && cat !== "all") {
+                if (item.category !== cat) { continue; }
             }
+            if (!SM.Util.containsCI(item.baseName, kw)) { continue; }
+            S.filtered.push(item);
         }
         ui.sortFiltered();
-        S.page = 0;
+        S.scrollPos = 0;
+        ui.updateScrollBar();
         ui.renderPage();
         ui.updateStatus();
     };
@@ -498,7 +477,6 @@ SM.UI = (function () {
         }
     };
 
-    // ---- 网格视图单元格 ----
     ui.addGridCell = function (parent, item) {
         var cell = parent.add("group");
         cell.orientation = "column";
@@ -509,15 +487,11 @@ SM.UI = (function () {
         var size = S.settings.iconSize || 64;
         cell.preferredSize = [size + 16, size + 52];
 
-        // 图标按钮；图标加载失败时使用文字占位按钮
         var btn;
         if (item.iconExists) {
-            var img = SM.Icon.load(item.iconPath);
-            if (img) {
-                btn = cell.add("iconbutton", undefined, img);
-            } else {
-                btn = cell.add("button", undefined, SM.Icon.placeholderText(item.baseName, 2));
-            }
+            var img = SM.Icon.load(item.iconPath, item.iconURI);
+            if (img) { btn = cell.add("iconbutton", undefined, img); } 
+            else { btn = cell.add("button", undefined, SM.Icon.placeholderText(item.baseName, 2)); }
         } else {
             btn = cell.add("button", undefined, SM.Icon.placeholderText(item.baseName, 2));
         }
@@ -527,15 +501,29 @@ SM.UI = (function () {
         var target = item;
         btn.onClick = function () { ui.runScript(target); };
 
-        // 收藏按钮（★/☆）
-        var star = cell.add("button", undefined, item.favorite ? "★" : "☆");
-        star.preferredSize = [size + 8, 18];
-        star.alignment = ["center", "top"];
+        var markRow = cell.add("group");
+        markRow.orientation = "row";
+        markRow.alignment = ["center", "top"];
+        markRow.alignChildren = ["center", "center"];
+        markRow.margins = 0;
+        markRow.spacing = 2;
+
+        var star = markRow.add("button", undefined, item.favorite ? "★" : "☆");
+        star.preferredSize = [22, 18];
         star.helpTip = item.favorite ? "取消收藏" : "添加收藏";
         ui.applyFont(star, 13);
         star.onClick = function () { ui.toggleFavorite(target); };
 
-        // 名称标签
+    // 【修改】分类按钮：改为显示2个汉字，未分类显示「··」
+        var catLabel = item.category ? item.category.substring(0, 2) : "··";
+        var catBtn = markRow.add("button", undefined, catLabel);
+        // 【修改】宽度从 22 增加到 36 以容纳2个汉字
+        catBtn.preferredSize = [36, 18]; 
+        var catTip = item.category ? ("分类: " + item.category + "（点击修改）") : "设置分类";
+        catBtn.helpTip = catTip;
+        ui.applyFont(catBtn, 11);
+        catBtn.onClick = function () { ui.assignCategory(target); };
+
         var lbl = cell.add("statictext", undefined, item.baseName);
         lbl.preferredSize = [size + 12, 18];
         lbl.alignment = ["center", "top"];
@@ -543,36 +531,37 @@ SM.UI = (function () {
         lbl.helpTip = item.baseName;
         ui.applyFont(lbl, 11);
 
-        // 单元格 hover 高亮
         ui.addHover(cell);
-
         return cell;
     };
 
-    // ---- 列表视图行 ----
     ui.addListRow = function (parent, item) {
         var row = parent.add("group");
         row.orientation = "row";
         row.alignment = ["fill", "top"];
         row.alignChildren = ["left", "center"];
-        row.margins = [2, 2, 2, 2];
+        row.margins = [4, 2, 4, 2];
         row.spacing = 6;
 
-        // 收藏星
         var star = row.add("button", undefined, item.favorite ? "★" : "☆");
         star.preferredSize = [24, 22];
         star.helpTip = item.favorite ? "取消收藏" : "添加收藏";
         ui.applyFont(star, 13);
 
-        // 小图标（单击运行）
+        // 【修改】分类按钮：改为显示2个汉字，未分类显示「··」
+        var catLabel = item.category ? item.category.substring(0, 2) : "··";
+        var catBtn = row.add("button", undefined, catLabel);
+        // 【修改】宽度从 40 增加到 52 以容纳2个汉字
+        catBtn.preferredSize = [52, 22];
+        var catTip = item.category ? ("分类: " + item.category + "（点击修改）") : "设置分类";
+        catBtn.helpTip = catTip;
+        ui.applyFont(catBtn, 11);
+
         var iconBtn;
         if (item.iconExists) {
-            var img = SM.Icon.load(item.iconPath);
-            if (img) {
-                iconBtn = row.add("iconbutton", undefined, img);
-            } else {
-                iconBtn = row.add("button", undefined, SM.Icon.placeholderText(item.baseName, 1));
-            }
+            var img = SM.Icon.load(item.iconPath, item.iconURI);
+            if (img) { iconBtn = row.add("iconbutton", undefined, img); } 
+            else { iconBtn = row.add("button", undefined, SM.Icon.placeholderText(item.baseName, 1)); }
         } else {
             iconBtn = row.add("button", undefined, SM.Icon.placeholderText(item.baseName, 1));
         }
@@ -580,14 +569,11 @@ SM.UI = (function () {
         iconBtn.helpTip = item.baseName + "（点击运行）";
         ui.applyFont(iconBtn, 10);
 
-        // 名称（填充剩余宽度）
         var name = row.add("statictext", undefined, item.baseName);
         name.alignment = ["fill", "center"];
-        name.characters = 20;
         name.helpTip = item.baseName;
         ui.applyFont(name, 11);
 
-        // 使用次数
         var usage = row.add("statictext", undefined, "×" + (item.usageCount || 0));
         usage.preferredSize = [36, 20];
         usage.alignment = ["right", "center"];
@@ -595,7 +581,6 @@ SM.UI = (function () {
         usage.helpTip = "使用次数: " + (item.usageCount || 0);
         ui.applyFont(usage, 11);
 
-        // 最近使用时间
         var lastTxt = SM.Util.formatDate(item.lastUsed || 0);
         var last = row.add("statictext", undefined, lastTxt);
         last.preferredSize = [76, 20];
@@ -606,21 +591,80 @@ SM.UI = (function () {
 
         var target = item;
         star.onClick = function () { ui.toggleFavorite(target); };
+        catBtn.onClick = function () { ui.assignCategory(target); };
         iconBtn.onClick = function () { ui.runScript(target); };
 
-        // 行 hover 高亮
         ui.addHover(row);
-
         return row;
     };
 
-    // 渲染当前页（按 viewMode 分派）
+    ui.computeVisibleCount = function () {
+        var h = 0;
+        if (S.controls.grid && S.controls.grid.size && S.controls.grid.size[1] > 0) {
+            h = S.controls.grid.size[1];
+        }
+        if (h < 100) { return S.settings.pageSize || 30; }
+        if (S.viewMode === "list") {
+            var rowH = 26;
+            return Math.max(1, Math.floor(h / rowH));
+        } else {
+            var cellH = (S.settings.iconSize || 64) + 52 + 6;
+            var rows = Math.max(1, Math.floor(h / cellH));
+            return rows * S.cols;
+        }
+    };
+
+    // 滚动到指定 item 索引（带边界裁剪，网格模式强制按行对齐）
+    ui.scrollTo = function (pos) {
+        var total = S.filtered.length;
+        var visible = ui.computeVisibleCount();
+        var maxPos = Math.max(0, total - visible);
+
+        // 【新增】网格视图强制按“行”对齐，避免滚动后图标排版错乱
+        if (S.viewMode === "grid") {
+            pos = Math.floor(pos / S.cols) * S.cols;
+            maxPos = Math.floor(maxPos / S.cols) * S.cols;
+        }
+
+        if (pos < 0) { pos = 0; }
+        if (pos > maxPos) { pos = maxPos; }
+        if (pos === S.scrollPos) { return; }
+        
+        S.scrollPos = pos;
+        if (S.controls.scrollBar) { S.controls.scrollBar.value = pos; }
+        ui.renderPage();
+        ui.updateStatus();
+    };
+
+    // 同步滚动条属性
+    ui.updateScrollBar = function () {
+        if (!S.controls.scrollBar) { return; }
+        var total = S.filtered.length;
+        var visible = ui.computeVisibleCount();
+        S.visibleCount = visible;
+        var maxPos = Math.max(0, total - visible);
+
+        // 【新增】网格视图的最大值也要按行对齐
+        if (S.viewMode === "grid") {
+            maxPos = Math.floor(maxPos / S.cols) * S.cols;
+        }
+
+        S.controls.scrollBar.min = 0;
+        S.controls.scrollBar.max = maxPos;
+        // 【修改】网格模式的 step 为当前列数，列表模式为 1
+        S.controls.scrollBar.step = (S.viewMode === "grid") ? S.cols : 1;
+        S.controls.scrollBar.jump = Math.max(1, Math.floor(visible / 2));
+        
+        if (S.scrollPos > maxPos) { S.scrollPos = maxPos; }
+        S.controls.scrollBar.value = S.scrollPos;
+    };
+
     ui.renderPage = function () {
         ui.clearGrid();
         var g = S.controls.grid;
-        var pageSize = S.settings.pageSize || 30;
-        var start = S.page * pageSize;
-        var end = Math.min(start + pageSize, S.filtered.length);
+        var visible = S.visibleCount || ui.computeVisibleCount();
+        var start = S.scrollPos;
+        var end = Math.min(start + visible, S.filtered.length);
 
         if (S.viewMode === "list") {
             var i;
@@ -643,66 +687,102 @@ SM.UI = (function () {
                 ui.addGridCell(row, S.filtered[i]);
             }
         }
-
         SM.Util.safe(function () { S.panel.layout.layout(true); }, null);
     };
 
     ui.updateStatus = function () {
         var total = S.filtered.length;
-        var pageSize = S.settings.pageSize || 30;
-        var pages = (total === 0) ? 0 : Math.ceil(total / pageSize);
-        var cur = (pages === 0) ? 0 : (S.page + 1);
-        if (S.controls.status) {
-            S.controls.status.text = "共 " + total + " 个  第 " + cur + "/" + pages + " 页";
+        var visible = S.visibleCount || ui.computeVisibleCount();
+        if (!S.controls.status) { return; }
+        if (total === 0) {
+            S.controls.status.text = "无脚本";
+            return;
         }
-        if (S.controls.prevBtn) { S.controls.prevBtn.enabled = (S.page > 0); }
-        if (S.controls.nextBtn) { S.controls.nextBtn.enabled = (S.page < pages - 1); }
+        var start = S.scrollPos + 1;
+        var end = Math.min(S.scrollPos + visible, total);
+        S.controls.status.text = "显示 " + start + "-" + end + " / 共 " + total + " 个";
     };
 
-    ui.goPage = function (delta) {
-        var pageSize = S.settings.pageSize || 30;
-        var pages = (S.filtered.length === 0) ? 0 : Math.ceil(S.filtered.length / pageSize);
-        var np = S.page + delta;
-        if (np < 0) { np = 0; }
-        if (np > pages - 1) { np = pages - 1; }
-        if (np === S.page) { return; }
-        S.page = np;
-        ui.renderPage();
-        ui.updateStatus();
-    };
-
-    // 重新扫描并刷新界面（保留当前视图与排序设置）
     ui.refresh = function () {
         SM.Util.safe(function () {
             var newScripts = SM.Scanner.scan();
-            // 合并元数据
             var i, len, m;
             for (i = 0, len = newScripts.length; i < len; i++) {
                 m = SM.Meta.get(newScripts[i].name);
                 newScripts[i].favorite = m.favorite || false;
                 newScripts[i].usageCount = m.usageCount || 0;
                 newScripts[i].lastUsed = m.lastUsed || 0;
+                newScripts[i].category = m.category || "";
             }
             S.allScripts = newScripts;
         }, null);
         ui.applySearch();
     };
 
-    // 切换收藏：更新元数据 + 即时保存 + 重渲当前页
     ui.toggleFavorite = function (item) {
         SM.Util.safe(function () {
             var newFav = SM.Meta.toggleFavorite(item.name);
             item.favorite = newFav;
-            // 若排序依赖收藏，重新排序；否则直接重渲当前页
-            if (S.sortBy === "favorite") {
-                ui.sortFiltered();
-            }
+            if (S.sortBy === "favorite") { ui.sortFiltered(); }
             ui.renderPage();
             ui.updateStatus();
         }, null);
     };
 
-    // 运行脚本：记录使用 + 执行 + 必要时重排
+    ui.assignCategory = function (item) {
+        SM.Util.safe(function () {
+            var cats = SM.Meta.CATEGORIES;
+            var labels = ["（未分类）"];
+            var i, len;
+            for (i = 0, len = cats.length; i < len; i++) { labels.push(cats[i]); }
+            var dlg = new Window("dialog", "设置分类 — " + item.baseName, undefined);
+            dlg.orientation = "column";
+            dlg.alignChildren = ["fill", "top"];
+            dlg.margins = 16;
+            dlg.spacing = 10;
+            ui.applyFont(dlg, 12);
+
+            var hint = dlg.add("statictext", undefined, "为该脚本选择一个分类：");
+            hint.alignment = ["left", "center"];
+
+            var dd = dlg.add("dropdownlist", undefined, labels);
+            dd.alignment = ["fill", "center"];
+            dd.preferredSize = [200, 22];
+            ui.applyFont(dd, 12);
+            
+            var selIdx = 0;
+            if (item.category) {
+                for (i = 0, len = cats.length; i < len; i++) {
+                    if (cats[i] === item.category) { selIdx = i + 1; break; }
+                }
+            }
+            dd.selection = selIdx;
+
+            var btns = dlg.add("group");
+            btns.alignment = ["right", "center"];
+            btns.orientation = "row";
+            btns.spacing = 8;
+            var cancelBtn = btns.add("button", undefined, "取消", { name: "cancel" });
+            var okBtn = btns.add("button", undefined, "确定", { name: "ok" });
+            ui.applyFont(cancelBtn, 12);
+            ui.applyFont(okBtn, 12);
+
+            var committed = false;
+            okBtn.onClick = function () { committed = true; dlg.close(); };
+            cancelBtn.onClick = function () { dlg.close(); };
+
+            dlg.show();
+            if (committed) {
+                var idx = (dd.selection && typeof dd.selection.index === "number") ? dd.selection.index : 0;
+                var newCat = (idx > 0) ? cats[idx - 1] : "";
+                SM.Meta.setCategory(item.name, newCat);
+                item.category = newCat;
+                ui.renderPage();
+                ui.updateStatus();
+            }
+        }, null);
+    };
+
     ui.runScript = function (item) {
         SM.Util.safe(function () {
             var f = new File(item.path);
@@ -710,16 +790,13 @@ SM.UI = (function () {
                 alert("脚本文件不存在：\n" + item.path);
                 return;
             }
-            // 记录使用
             SM.Meta.recordUsage(item.name);
             item.usageCount = (item.usageCount || 0) + 1;
             item.lastUsed = (new Date()).getTime();
 
-            // 执行（UTF-8 以正确处理含中文注释的脚本）
             f.encoding = "UTF-8";
             $.evalFile(f);
 
-            // 若排序依赖使用记录，重排重渲
             if (S.sortBy === "lastUsed" || S.sortBy === "usageCount") {
                 ui.sortFiltered();
                 ui.renderPage();
@@ -728,7 +805,132 @@ SM.UI = (function () {
         }, null);
     };
 
-    // 构建主面板
+    ui.setViewMode = function (mode) {
+        if (mode === S.viewMode) { return; }
+        S.viewMode = mode;
+        S.settings.viewMode = mode;
+        SM.Storage.saveSettings(S.settings);
+        ui.updateTabStates();
+        ui.updateScrollBar();
+        ui.renderPage();
+        ui.updateStatus();
+    };
+
+    ui.setCategory = function (cat) {
+        if (cat === S.activeCategory) { return; }
+        S.activeCategory = cat;
+        ui.updateTabStates();
+        ui.applySearch();
+    };
+
+    ui.updateTabStates = function () {
+        if (S.controls.gridBtn) { S.controls.gridBtn.enabled = (S.viewMode !== "grid"); }
+        if (S.controls.listBtn) { S.controls.listBtn.enabled = (S.viewMode !== "list"); }
+        var i, len, btn, key;
+        var cats = ["all"].concat(SM.Meta.CATEGORIES).concat(["favorites"]);
+        for (i = 0, len = cats.length; i < len; i++) {
+            key = "catBtn_" + cats[i];
+            btn = S.controls[key];
+            if (btn) { btn.enabled = (S.activeCategory !== cats[i]); }
+        }
+    };
+
+    ui.openHomepage = function () {
+        SM.Util.safe(function () {
+            var url = "https://vinofx.com/";
+            if ($.os === "Macintosh") {
+                system.callSystem("open " + url);
+            } else {
+                system.callSystem('cmd /c start "" "' + url + '"');
+            }
+        }, null);
+    };
+
+    ui.openScriptDir = function () {
+        SM.Util.safe(function () {
+            var dir = SM.Scanner.getScriptDir();
+            if (dir && dir.exists) {
+                dir.execute();
+            } else {
+                alert("ScriptFile 目录不存在");
+            }
+        }, null);
+    };
+
+    ui.openSettings = function () {
+        SM.Util.safe(function () {
+            var dlg = new Window("dialog", "设置", undefined);
+            dlg.orientation = "column";
+            dlg.alignChildren = ["fill", "top"];
+            dlg.margins = 16;
+            dlg.spacing = 10;
+            ui.applyFont(dlg, 12);
+
+            var sizeLbl = dlg.add("statictext", undefined, "图标尺寸：");
+            sizeLbl.alignment = ["left", "center"];
+
+            var SIZES = [
+                { label: "小 (48px)", value: 48 },
+                { label: "中 (64px)", value: 64 },
+                { label: "大 (80px)", value: 80 },
+                { label: "特大 (96px)", value: 96 }
+            ];
+            var labels = [];
+            var i, len, curSel = 1;
+            var cur = S.settings.iconSize || 64;
+            for (i = 0, len = SIZES.length; i < len; i++) {
+                labels.push(SIZES[i].label);
+                if (SIZES[i].value === cur) { curSel = i; }
+            }
+            var dd = dlg.add("dropdownlist", undefined, labels);
+            dd.alignment = ["fill", "center"];
+            dd.preferredSize = [180, 22];
+            dd.selection = curSel;
+            ui.applyFont(dd, 12);
+
+            var info = dlg.add("statictext", undefined, "视图模式：" + (S.viewMode === "list" ? "列表" : "网格"));
+            info.alignment = ["left", "center"];
+            ui.applyFont(info, 11);
+
+            var btns = dlg.add("group");
+            btns.alignment = ["right", "center"];
+            btns.orientation = "row";
+            btns.spacing = 8;
+            var cancelBtn = btns.add("button", undefined, "取消", { name: "cancel" });
+            var okBtn = btns.add("button", undefined, "确定", { name: "ok" });
+            ui.applyFont(cancelBtn, 12);
+            ui.applyFont(okBtn, 12);
+
+            var committed = false;
+            okBtn.onClick = function () { committed = true; dlg.close(); };
+            cancelBtn.onClick = function () { dlg.close(); };
+
+            dlg.show();
+            if (committed) {
+                var idx = (dd.selection && typeof dd.selection.index === "number") ? dd.selection.index : curSel;
+                var newSize = SIZES[idx].value;
+                if (newSize !== cur) {
+                    S.settings.iconSize = newSize;
+                    SM.Storage.saveSettings(S.settings);
+                    S.cols = ui.computeColumns();
+                    ui.updateScrollBar();
+                    ui.renderPage();
+                    ui.updateStatus();
+                }
+            }
+        }, null);
+    };
+
+    ui.loadLogo = function () {
+        return SM.Util.safe(function () {
+            var root = SM.Util.getScriptDir();
+            var f = new File(SM.Util.joinPath(root.fsName, "logo.png"));
+            if (!f.exists) { return null; }
+            var img = ScriptUI.newImage(f);
+            return img || null;
+        }, null);
+    };
+
     ui.buildPanel = function (thisObj) {
         var panel = null;
         SM.Util.safe(function () {
@@ -745,24 +947,36 @@ SM.UI = (function () {
         panel.alignChildren = ["fill", "top"];
         panel.margins = [8, 8, 8, 8];
         panel.spacing = 6;
-        // 在面板上设置中文字体，工具栏/底部栏等子元素多数会继承（消除中文乱码）
         SM.Util.safe(function () {
             var f = ScriptUI.newFont(UI_FONT_NAME, "Regular", 12);
             if (f) { panel.graphics.font = f; }
         }, null);
 
-        // ---- 工具栏：搜索框 + 刷新 ----
+        // ---- 工具栏 ----
         var toolbar = panel.add("group");
         toolbar.orientation = "row";
         toolbar.alignment = ["fill", "top"];
-        toolbar.alignChildren = ["fill", "center"];
+        toolbar.alignChildren = ["left", "center"]; // 改为左对齐避免极限拉扯
         toolbar.margins = 0;
         toolbar.spacing = 6;
+
+        var logoImg = ui.loadLogo();
+        var logoBtn;
+        if (logoImg) { logoBtn = toolbar.add("iconbutton", undefined, logoImg); } 
+        else { 
+            logoBtn = toolbar.add("button", undefined, "V"); 
+            ui.applyFont(logoBtn, 13);
+        }
+        logoBtn.preferredSize = [28, 28];
+        logoBtn.helpTip = "vinofx.com — 点击打开作者首页";
+        logoBtn.onClick = function () { ui.openHomepage(); };
+        S.controls.logo = logoBtn;
 
         var searchBox = toolbar.add("edittext", undefined, "");
         searchBox.alignment = ["fill", "center"];
         searchBox.helpTip = "输入脚本名称进行过滤";
-        searchBox.characters = 12;
+        // [修改] 删除写死的 characters，赋予 minimumSize，让其能在停靠时被挤压，不把右侧按钮顶出去
+        searchBox.minimumSize = [40, 24]; 
         ui.applyFont(searchBox, 12);
         searchBox.onChanging = function () {
             S.keyword = this.text;
@@ -770,49 +984,59 @@ SM.UI = (function () {
         };
         S.controls.search = searchBox;
 
-        var refreshBtn = toolbar.add("button", undefined, "刷新");
-        refreshBtn.alignment = ["right", "center"];
-        refreshBtn.preferredSize = [56, 24];
-        refreshBtn.helpTip = "重新扫描 ScriptFile 目录";
-        ui.applyFont(refreshBtn, 12);
-        refreshBtn.onClick = function () { ui.refresh(); };
-        S.controls.refresh = refreshBtn;
+        var gridBtn = toolbar.add("button", undefined, "网格");
+        gridBtn.preferredSize = [48, 24];
+        gridBtn.helpTip = "网格视图";
+        ui.applyFont(gridBtn, 12);
+        gridBtn.onClick = function () { ui.setViewMode("grid"); };
+        S.controls.gridBtn = gridBtn;
 
-        // ---- 过滤栏：视图切换 + 排序 ----
-        var filterBar = panel.add("group");
-        filterBar.orientation = "row";
-        filterBar.alignment = ["fill", "top"];
-        filterBar.alignChildren = ["left", "center"];
-        filterBar.margins = 0;
-        filterBar.spacing = 6;
+        var listBtn = toolbar.add("button", undefined, "列表");
+        listBtn.preferredSize = [48, 24];
+        listBtn.helpTip = "列表视图";
+        ui.applyFont(listBtn, 12);
+        listBtn.onClick = function () { ui.setViewMode("list"); };
+        S.controls.listBtn = listBtn;
 
-        var viewLbl = filterBar.add("statictext", undefined, "视图:");
-        ui.applyFont(viewLbl, 11);
-        var viewDD = filterBar.add("dropdownlist", undefined, ["网格", "列表"]);
-        viewDD.preferredSize = [56, 22];
-        viewDD.selection = (S.viewMode === "list") ? 1 : 0;
-        viewDD.helpTip = "切换视图模式";
-        ui.applyFont(viewDD, 11);
-        viewDD.onChange = function () {
-            SM.Util.safe(function () {
-                var idx = (viewDD.selection && typeof viewDD.selection.index === "number")
-                    ? viewDD.selection.index : 0;
-                var newMode = (idx === 1) ? "list" : "grid";
-                if (newMode !== S.viewMode) {
-                    S.viewMode = newMode;
-                    S.settings.viewMode = newMode;
-                    SM.Storage.saveSettings(S.settings);
-                    ui.renderPage();
-                }
-            }, null);
-        };
-        S.controls.viewDD = viewDD;
+        // ---- 分类标签栏 ----
+        var categoryBar = panel.add("group");
+        categoryBar.orientation = "row";
+        categoryBar.alignment = ["fill", "top"];
+        categoryBar.alignChildren = ["left", "center"];
+        categoryBar.margins = 0;
+        categoryBar.spacing = 4;
 
-        var sortLbl = filterBar.add("statictext", undefined, "排序:");
+        var CAT_DEFS = [
+            { label: "全部", key: "all" },
+            { label: "动画", key: "动画" },
+            { label: "工具", key: "工具" },
+            { label: "渲染", key: "渲染" },
+            { label: "★ 收藏", key: "favorites" }
+        ];
+        var ci, clen, cbtn;
+        for (ci = 0, clen = CAT_DEFS.length; ci < clen; ci++) {
+            cbtn = categoryBar.add("button", undefined, CAT_DEFS[ci].label);
+            // [修改] 解除原先 preferredSize = [54, 22] 的写死逻辑，允许窄面板自适应收缩
+            cbtn.preferredSize = [-1, 22]; 
+            cbtn.helpTip = "按分类筛选：" + CAT_DEFS[ci].label;
+            ui.applyFont(cbtn, 11);
+            (function (k) { cbtn.onClick = function () { ui.setCategory(k); }; })(CAT_DEFS[ci].key);
+            S.controls["catBtn_" + CAT_DEFS[ci].key] = cbtn;
+        }
+
+        // ---- 排序与状态条 ----
+        var sortStatusBar = panel.add("group");
+        sortStatusBar.orientation = "row";
+        sortStatusBar.alignment = ["fill", "top"];
+        sortStatusBar.alignChildren = ["left", "center"];
+        sortStatusBar.margins = 0;
+        sortStatusBar.spacing = 6;
+
+        var sortLbl = sortStatusBar.add("statictext", undefined, "排序:");
         ui.applyFont(sortLbl, 11);
         var SORT_LABELS = ["名称", "最近", "次数", "收藏优先"];
         var SORT_KEYS = ["name", "lastUsed", "usageCount", "favorite"];
-        var sortDD = filterBar.add("dropdownlist", undefined, SORT_LABELS);
+        var sortDD = sortStatusBar.add("dropdownlist", undefined, SORT_LABELS);
         sortDD.preferredSize = [76, 22];
         var initSel = 0;
         var k;
@@ -824,15 +1048,15 @@ SM.UI = (function () {
         ui.applyFont(sortDD, 11);
         sortDD.onChange = function () {
             SM.Util.safe(function () {
-                var idx = (sortDD.selection && typeof sortDD.selection.index === "number")
-                    ? sortDD.selection.index : 0;
+                var idx = (sortDD.selection && typeof sortDD.selection.index === "number") ? sortDD.selection.index : 0;
                 var newSort = SORT_KEYS[idx] || "name";
                 if (newSort !== S.sortBy) {
                     S.sortBy = newSort;
                     S.settings.sortBy = newSort;
                     SM.Storage.saveSettings(S.settings);
                     ui.sortFiltered();
-                    S.page = 0;
+                    S.scrollPos = 0;
+                    ui.updateScrollBar();
                     ui.renderPage();
                     ui.updateStatus();
                 }
@@ -840,8 +1064,23 @@ SM.UI = (function () {
         };
         S.controls.sortDD = sortDD;
 
-        // ---- 网格内容区 ----
-        var grid = panel.add("group");
+        var status = sortStatusBar.add("statictext", undefined, "就绪");
+        status.alignment = ["fill", "center"];
+        status.justify = "right";
+        // [修改] 删除 characters=24，允许停靠时压缩
+        status.minimumSize = [30, -1]; 
+        ui.applyFont(status, 11);
+        S.controls.status = status;
+
+        // ---- 内容区 ----
+        var contentWrap = panel.add("group");
+        contentWrap.orientation = "row";
+        contentWrap.alignment = ["fill", "fill"];
+        contentWrap.alignChildren = ["fill", "fill"];
+        contentWrap.margins = 0;
+        contentWrap.spacing = 4;
+
+        var grid = contentWrap.add("group");
         grid.orientation = "column";
         grid.alignment = ["fill", "fill"];
         grid.alignChildren = ["fill", "top"];
@@ -849,7 +1088,39 @@ SM.UI = (function () {
         grid.spacing = 6;
         S.controls.grid = grid;
 
-        // ---- 底部分页栏 ----
+        var scrollBar = contentWrap.add("scrollbar", undefined, 0, 0, 0);
+        scrollBar.preferredSize = [16, -1];
+        scrollBar.alignment = ["right", "fill"];
+        scrollBar.helpTip = "拖动或点击滚动浏览脚本";
+        scrollBar.onChanging = function () {
+            // 【修改】必须取整，防止 AE 将浮点数传给数组切割逻辑导致崩溃或无反应
+            ui.scrollTo(Math.round(this.value));
+        };
+        S.controls.scrollBar = scrollBar;
+
+        // 【修改】尝试将鼠标滚轮事件挂载到顶层 panel 上，提高触发率
+        SM.Util.safe(function () {
+            panel.addEventListener("mousewheel", function (e) {
+                var delta = 0;
+                if (e) {
+                    if (typeof e.delta === "number") { delta = e.delta; }
+                    else if (typeof e.wheelDelta === "number") { delta = e.wheelDelta; }
+                    else if (typeof e.detail === "number") { delta = -e.detail; }
+                }
+                if (delta !== 0) {
+                    // 网格每次滚 1 行 (S.cols)，列表每次滚 3 项
+                    var step = (S.viewMode === "grid") ? S.cols : 3;
+                    if (delta > 0) {
+                        ui.scrollTo(S.scrollPos - step);
+                    } else if (delta < 0) {
+                        ui.scrollTo(S.scrollPos + step);
+                    }
+                }
+            });
+        }, null);
+        S.controls.scrollBar = scrollBar;
+
+        // ---- 底部状态栏 ----
         var footer = panel.add("group");
         footer.orientation = "row";
         footer.alignment = ["fill", "bottom"];
@@ -857,47 +1128,52 @@ SM.UI = (function () {
         footer.margins = 0;
         footer.spacing = 6;
 
-        var prevBtn = footer.add("button", undefined, "上一页");
-        prevBtn.preferredSize = [64, 22];
-        ui.applyFont(prevBtn, 12);
-        prevBtn.onClick = function () { ui.goPage(-1); };
-        S.controls.prevBtn = prevBtn;
+        var refreshBtn = footer.add("button", undefined, "刷新");
+        refreshBtn.preferredSize = [48, 24]; // 稍微缩小
+        ui.applyFont(refreshBtn, 12);
+        refreshBtn.onClick = function () { ui.refresh(); };
 
-        var status = footer.add("statictext", undefined, "就绪");
-        status.alignment = ["fill", "center"];
-        status.characters = 28;
-        ui.applyFont(status, 11);
-        S.controls.status = status;
+        var settingsBtn = footer.add("button", undefined, "设置");
+        settingsBtn.preferredSize = [48, 24]; // 稍微缩小
+        ui.applyFont(settingsBtn, 12);
+        settingsBtn.onClick = function () { ui.openSettings(); };
 
-        var nextBtn = footer.add("button", undefined, "下一页");
-        nextBtn.preferredSize = [64, 22];
-        nextBtn.alignment = ["right", "center"];
-        ui.applyFont(nextBtn, 12);
-        nextBtn.onClick = function () { ui.goPage(1); };
-        S.controls.nextBtn = nextBtn;
+        var openDirBtn = footer.add("button", undefined, "目录"); // 缩短文字
+        openDirBtn.preferredSize = [56, 24];
+        ui.applyFont(openDirBtn, 12);
+        openDirBtn.onClick = function () { ui.openScriptDir(); };
 
-        // ---- 初始布局与列数 ----
+        var versionLbl = footer.add("statictext", undefined, "v1.0");
+        versionLbl.alignment = ["fill", "center"];
+        versionLbl.justify = "right";
+        versionLbl.minimumSize = [20, -1];
+        ui.applyFont(versionLbl, 11);
+
         SM.Util.safe(function () { panel.layout.layout(true); }, null);
         S.cols = ui.computeColumns();
 
-        // ---- 调整大小：仅网格视图需重算列数 ----
-        panel.onResizing = function () {
+        // [修改] 强化调整大小的事件捕获，兼顾实时拖动(onResizing)与最终释放(onResize)
+        panel.onResizing = panel.onResize = function () {
             SM.Util.safe(function () { S.panel.layout.layout(true); }, null);
-            if (S.viewMode !== "grid") { return; }
-            var newCols = ui.computeColumns();
-            if (newCols !== S.cols) {
-                S.cols = newCols;
+            var oldCols = S.cols;
+            var oldVisible = S.visibleCount;
+            if (S.viewMode === "grid") {
+                var newCols = ui.computeColumns();
+                if (newCols !== oldCols) { S.cols = newCols; }
+            }
+            ui.updateScrollBar();
+            if (S.cols !== oldCols || S.visibleCount !== oldVisible) {
                 ui.renderPage();
+                ui.updateStatus();
             }
         };
 
-        // ---- 关闭时保存设置 ----
         panel.onClose = function () {
             SM.Util.safe(function () { SM.Storage.saveSettings(S.settings); }, null);
             return true;
         };
 
-        // ---- 首次渲染 ----
+        ui.updateTabStates();
         ui.applySearch();
 
         return panel;
@@ -905,7 +1181,6 @@ SM.UI = (function () {
 
     return ui;
 })();
-
 
 // =========================================================================
 // 模块：SM.Bootstrap —— 启动入口
@@ -916,7 +1191,7 @@ SM.Bootstrap = (function () {
     boot.start = function (thisObj) {
         SM.Util.safe(function () {
             var settings = SM.Storage.loadSettings();
-            SM.Meta.init();                       // 加载元数据
+            SM.Meta.init();
             var scripts = SM.Scanner.scan();
             SM.UI.init(settings, scripts);
             var panel = SM.UI.buildPanel(thisObj);
@@ -929,6 +1204,4 @@ SM.Bootstrap = (function () {
     return boot;
 })();
 
-
-// ==================== 启动 ====================
 SM.Bootstrap.start(this);
